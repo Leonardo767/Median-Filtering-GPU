@@ -176,8 +176,7 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
     
     // Allocate device memory for input
     unsigned char *device_input_image;
-    cudaMalloc((void**) &device_input_image, size);
-    status = cudaGetLastError();
+    status = cudaMalloc((void**) &device_input_image, size);
     if (status != cudaSuccess) {
         LOG("ERROR: Failed to allocate device input memory. Error: %s\n", cudaGetErrorString(status));
         cudaEventDestroy(start_total);
@@ -195,9 +194,8 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
     // Host to device transfer
     LOG("Copying data from host to device...\n");
     cudaEventRecord(start_h2d);
-    cudaMemcpy(device_input_image, input->image, size, cudaMemcpyHostToDevice);
+    status = cudaMemcpy(device_input_image, input->image, size, cudaMemcpyHostToDevice);
     cudaEventRecord(stop_h2d);
-    status = cudaGetLastError();
     if (status != cudaSuccess) {
         LOG("ERROR: Host-to-device transfer failed. Error: %s\n", cudaGetErrorString(status));
         cudaFree(device_input_image);
@@ -215,8 +213,7 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
     
     // Allocate device memory for output
     unsigned char *device_output_image;
-    cudaMalloc((void**) &device_output_image, size);
-    status = cudaGetLastError();
+    status = cudaMalloc((void**) &device_output_image, size);
     if (status != cudaSuccess) {
         LOG("ERROR: Failed to allocate device output memory. Error: %s\n", cudaGetErrorString(status));
         cudaFree(device_input_image);
@@ -250,10 +247,10 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
         LOG("Using shared memory kernel\n");
         medianFilterSharedKernel<<<dimGrid, dimBlock>>>(device_input_image, device_output_image, width, height);
     }
-    cudaEventRecord(stop_kernel);
-    status = cudaGetLastError();
+    status = cudaGetLastError();  // Check immediately after launch
     if (status != cudaSuccess) {
         LOG("ERROR: Kernel launch failed. Error: %s\n", cudaGetErrorString(status));
+        cudaEventRecord(stop_kernel);  // Record stop even on error
         cudaFree(device_input_image);
         cudaFree(device_output_image);
         cudaEventDestroy(start_total);
@@ -266,14 +263,14 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
         cudaEventDestroy(stop_d2h);
         return 0;
     }
+    cudaEventRecord(stop_kernel);
     LOG("Kernel launched successfully, waiting for completion...\n");
     
     // Device to host transfer
     LOG("Copying data from device to host...\n");
     cudaEventRecord(start_d2h);
-    cudaMemcpy(output->image, device_output_image, size, cudaMemcpyDeviceToHost);
+    status = cudaMemcpy(output->image, device_output_image, size, cudaMemcpyDeviceToHost);
     cudaEventRecord(stop_d2h);
-    status = cudaGetLastError();
     if (status != cudaSuccess) {
         LOG("ERROR: Device-to-host transfer failed. Error: %s\n", cudaGetErrorString(status));
         cudaFree(device_input_image);
@@ -296,6 +293,9 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
     cudaEventSynchronize(stop_kernel);
     cudaEventSynchronize(stop_d2h);
     
+    // Ensure all operations are complete before proceeding
+    cudaDeviceSynchronize();
+    
     cudaEventElapsedTime(&timing_info->total_time_ms, start_total, stop_total);
     cudaEventElapsedTime(&timing_info->h2d_time_ms, start_h2d, stop_h2d);
     cudaEventElapsedTime(&timing_info->kernel_time_ms, start_kernel, stop_kernel);
@@ -309,6 +309,9 @@ int median_filter_gpu_wrapper(BitmapHandle input_handle, BitmapHandle output_han
     LOG("Freeing device memory...\n");
     cudaFree(device_input_image);
     cudaFree(device_output_image);
+    
+    // Ensure cleanup is complete
+    cudaDeviceSynchronize();
     
     cudaEventDestroy(start_total);
     cudaEventDestroy(stop_total);

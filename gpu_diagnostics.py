@@ -321,6 +321,111 @@ def measure_memory_delta(diagnostics: GPUDiagnostics, operation_name: str = "Ope
     return MemoryDelta(diagnostics, operation_name)
 
 
+def measure_energy_consumption(diagnostics: GPUDiagnostics, operation_name: str = "Operation", 
+                                sample_interval: float = 0.01):
+    """
+    Context manager to measure energy consumption during an operation.
+    Samples power consumption at regular intervals and calculates energy.
+    
+    Usage:
+        with measure_energy_consumption(diag, "Kernel Launch") as energy:
+            # Your GPU operation here
+            pass
+        print(f"Energy consumed: {energy.total_energy_joules:.4f} J")
+    
+    Args:
+        diagnostics: GPUDiagnostics instance
+        operation_name: Name of the operation (for logging)
+        sample_interval: Time between power samples in seconds (default: 0.01 = 10ms)
+    
+    Returns:
+        EnergyMonitor context manager
+    """
+    class EnergyMonitor:
+        def __init__(self, diag, name, interval):
+            self.diag = diag
+            self.name = name
+            self.interval = interval
+            self.power_samples = []
+            self.start_time = None
+            self.end_time = None
+            self.total_energy_joules = 0.0
+            self.avg_power_watts = 0.0
+            self.max_power_watts = 0.0
+            self.min_power_watts = float('inf')
+            self._monitoring = False
+            self._stop_monitoring = False
+        
+        def __enter__(self):
+            import threading
+            self.start_time = time.time()
+            self._monitoring = True
+            self._stop_monitoring = False
+            
+            # Start power monitoring thread
+            def monitor_power():
+                while not self._stop_monitoring:
+                    if self.diag.initialized:
+                        power = self.diag.get_power_usage()
+                        if power is not None:
+                            self.power_samples.append((time.time(), power))
+                            if power > self.max_power_watts:
+                                self.max_power_watts = power
+                            if power < self.min_power_watts:
+                                self.min_power_watts = power
+                    time.sleep(self.interval)
+            
+            self.monitor_thread = threading.Thread(target=monitor_power, daemon=True)
+            self.monitor_thread.start()
+            return self
+        
+        def __exit__(self, *args):
+            self._stop_monitoring = True
+            self.end_time = time.time()
+            
+            # Wait for monitoring thread to finish
+            if hasattr(self, 'monitor_thread'):
+                self.monitor_thread.join(timeout=0.1)
+            
+            # Calculate energy consumption
+            if self.power_samples:
+                # Calculate average power
+                if len(self.power_samples) > 0:
+                    total_power = sum(p for _, p in self.power_samples)
+                    self.avg_power_watts = total_power / len(self.power_samples)
+                
+                # Calculate energy: E = P_avg * t
+                duration_seconds = self.end_time - self.start_time
+                self.total_energy_joules = self.avg_power_watts * duration_seconds
+                
+                # Alternative: integrate power over time using samples
+                if len(self.power_samples) > 1:
+                    integrated_energy = 0.0
+                    for i in range(1, len(self.power_samples)):
+                        t1, p1 = self.power_samples[i-1]
+                        t2, p2 = self.power_samples[i]
+                        dt = t2 - t1
+                        avg_p = (p1 + p2) / 2.0
+                        integrated_energy += avg_p * dt
+                    # Use integrated energy if available (more accurate)
+                    if integrated_energy > 0:
+                        self.total_energy_joules = integrated_energy
+            else:
+                # Fallback: use single power reading
+                power = self.diag.get_power_usage()
+                if power is not None:
+                    duration_seconds = self.end_time - self.start_time
+                    self.avg_power_watts = power
+                    self.total_energy_joules = power * duration_seconds
+            
+            if self.min_power_watts == float('inf'):
+                self.min_power_watts = self.avg_power_watts
+            
+            return False
+    
+    return EnergyMonitor(diagnostics, operation_name, sample_interval)
+
+
 def get_cuda_device_count() -> int:
     """
     Get the number of CUDA devices available.

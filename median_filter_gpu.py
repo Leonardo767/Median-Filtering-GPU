@@ -318,8 +318,13 @@ class MedianFilterGPU:
         # Prepare timing info structure
         timing_info = TimingInfo()
         
-        # Measure memory delta if diagnostics available
+        # Measure memory delta and energy consumption if diagnostics available
+        energy_monitor = None
         if collect_diagnostics and self.diagnostics:
+            from gpu_diagnostics import measure_energy_consumption
+            energy_monitor = measure_energy_consumption(self.diagnostics, "Median Filter", sample_interval=0.005)
+            energy_monitor.__enter__()
+            
             with measure_memory_delta(self.diagnostics, "Median Filter"):
                 # Run the filter
                 result = self.lib.median_filter_gpu_wrapper(
@@ -337,13 +342,28 @@ class MedianFilterGPU:
                 ctypes.byref(timing_info)
             )
         
+        # Reset CUDA error state to clear any previous errors
+        try:
+            libcudart = ctypes.CDLL("libcudart.so")
+            libcudart.cudaDeviceSynchronize()
+            libcudart.cudaGetLastError()  # Clear error state
+        except:
+            pass
+        
         if not result:
+            # Stop energy monitoring on error
+            if energy_monitor:
+                energy_monitor.__exit__(None, None, None)
             error_str = self.lib.get_cuda_error_string()
             if error_str:
                 error_msg = error_str.decode('utf-8')
             else:
                 error_msg = "Unknown error"
             raise RuntimeError(f"GPU median filter failed: {error_msg}")
+        
+        # Stop energy monitoring and get results
+        if energy_monitor:
+            energy_monitor.__exit__(None, None, None)
         
         # Collect diagnostics after operation
         stats_after = None
@@ -358,6 +378,17 @@ class MedianFilterGPU:
             'd2h_time_ms': timing_info.d2h_time_ms,
             'success': bool(timing_info.success)
         }
+        
+        # Add energy consumption if monitored
+        if energy_monitor and energy_monitor.total_energy_joules > 0:
+            timing_dict['energy'] = {
+                'total_energy_joules': energy_monitor.total_energy_joules,
+                'total_energy_mj': energy_monitor.total_energy_joules * 1000.0,  # millijoules
+                'avg_power_watts': energy_monitor.avg_power_watts,
+                'max_power_watts': energy_monitor.max_power_watts,
+                'min_power_watts': energy_monitor.min_power_watts,
+                'duration_seconds': energy_monitor.end_time - energy_monitor.start_time if energy_monitor.end_time else 0.0
+            }
         
         # Add diagnostics if collected
         if stats_before and stats_after:
@@ -377,6 +408,23 @@ class MedianFilterGPU:
         print(f"Host-to-Device:    {timing_dict['h2d_time_ms']:.4f} ms")
         print(f"Kernel Execution:  {timing_dict['kernel_time_ms']:.4f} ms")
         print(f"Device-to-Host:    {timing_dict['d2h_time_ms']:.4f} ms")
+        
+        # Print energy consumption if available
+        if 'energy' in timing_dict:
+            energy = timing_dict['energy']
+            print("\n" + "-"*60)
+            print("ENERGY CONSUMPTION")
+            print("-"*60)
+            print(f"Total Energy:      {energy['total_energy_joules']:.6f} J ({energy['total_energy_mj']:.3f} mJ)")
+            print(f"Average Power:     {energy['avg_power_watts']:.2f} W")
+            print(f"Max Power:         {energy['max_power_watts']:.2f} W")
+            print(f"Min Power:         {energy['min_power_watts']:.2f} W")
+            print(f"Duration:          {energy['duration_seconds']*1000:.4f} ms")
+            # Calculate energy per operation metrics
+            if timing_dict['kernel_time_ms'] > 0:
+                energy_per_kernel_ms = energy['total_energy_joules'] / timing_dict['kernel_time_ms'] * 1000
+                print(f"Energy/Kernel-ms:  {energy_per_kernel_ms:.6f} J/s")
+        
         print("="*60 + "\n")
         
         if 'diagnostics' in timing_dict:
