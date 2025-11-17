@@ -1,0 +1,11 @@
+# Python dependencies for CUDA Median Filter GPU wrapper
+
+# GPU diagnostics and monitoring (nvidia-ml-py provides pynvml module)
+nvidia-ml-py>=12.0.0
+
+# Optional: For easier image manipulation (if needed)
+numpy>=1.19.0
+
+# Optional: For alternative image I/O formats (if needed)
+Pillow>=8.0.0
+
