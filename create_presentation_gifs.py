@@ -85,14 +85,15 @@ def create_gif_from_frames(frame_dir: str, output_path: str,
     print(f"  ✓ Created GIF: {output_path} ({len(frames)} frames, {duration}ms per frame)")
     return len(frames)
 
-def create_side_by_side_gif(gt_dir: str, denoised_dir: str, output_path: str,
+def create_side_by_side_gif(gt_dir: str, noisy_dir: str, denoised_dir: str, output_path: str,
                             start_frame: int = None, end_frame: int = None,
                             duration: int = 100, loop: int = 0, gap: int = 10):
     """
-    Create a side-by-side comparison GIF.
+    Create a side-by-side comparison GIF with three videos: ground truth, noisy, and denoised.
     
     Args:
         gt_dir: Ground truth frames directory
+        noisy_dir: Noisy frames directory
         denoised_dir: Denoised frames directory
         output_path: Output GIF file path
         start_frame: First frame number (None for all)
@@ -102,10 +103,13 @@ def create_side_by_side_gif(gt_dir: str, denoised_dir: str, output_path: str,
         gap: Gap between images in pixels
     """
     gt_dir = Path(gt_dir)
+    noisy_dir = Path(noisy_dir)
     denoised_dir = Path(denoised_dir)
     
     if not gt_dir.exists():
         raise FileNotFoundError(f"Ground truth directory not found: {gt_dir}")
+    if not noisy_dir.exists():
+        raise FileNotFoundError(f"Noisy directory not found: {noisy_dir}")
     if not denoised_dir.exists():
         raise FileNotFoundError(f"Denoised directory not found: {denoised_dir}")
     
@@ -130,46 +134,51 @@ def create_side_by_side_gif(gt_dir: str, denoised_dir: str, output_path: str,
     if not gt_files:
         raise ValueError(f"No frames found in range {start_frame} to {end_frame}")
     
-    print(f"  Loading {len(gt_files)} frame pairs...")
+    print(f"  Loading {len(gt_files)} frame triplets...")
     
     # Load and combine frames
     combined_frames = []
     for gt_file in gt_files:
         frame_num = get_frame_number(str(gt_file))
+        noisy_file = noisy_dir / f"frame_{frame_num:05d}.bmp"
         denoised_file = denoised_dir / f"frame_{frame_num:05d}.bmp"
         
+        if not noisy_file.exists():
+            print(f"  Warning: Noisy frame {frame_num:05d} not found, skipping...")
+            continue
         if not denoised_file.exists():
             print(f"  Warning: Denoised frame {frame_num:05d} not found, skipping...")
             continue
         
-        # Load both images
+        # Load all three images
         gt_img = Image.open(gt_file)
+        noisy_img = Image.open(noisy_file)
         denoised_img = Image.open(denoised_file)
         
         # Convert to RGB if needed
         if gt_img.mode != 'RGB':
             gt_img = gt_img.convert('RGB')
+        if noisy_img.mode != 'RGB':
+            noisy_img = noisy_img.convert('RGB')
         if denoised_img.mode != 'RGB':
             denoised_img = denoised_img.convert('RGB')
         
-        # Get dimensions
-        gt_w, gt_h = gt_img.size
-        denoised_w, denoised_h = denoised_img.size
+        # Get dimensions (assuming all same size)
+        img_w, img_h = gt_img.size
         
-        # Create combined image (side by side)
-        # Add labels if there's a gap
+        # Create combined image (three images side by side)
         if gap > 0:
-            combined_w = gt_w + denoised_w + gap
-            combined_h = max(gt_h, denoised_h)
+            combined_w = img_w * 3 + gap * 2
         else:
-            combined_w = gt_w + denoised_w
-            combined_h = max(gt_h, denoised_h)
+            combined_w = img_w * 3
+        combined_h = img_h
         
         combined_img = Image.new('RGB', (combined_w, combined_h), color='white')
         
         # Paste images side by side
         combined_img.paste(gt_img, (0, 0))
-        combined_img.paste(denoised_img, (gt_w + gap, 0))
+        combined_img.paste(noisy_img, (img_w + gap, 0))
+        combined_img.paste(denoised_img, (img_w * 2 + gap * 2, 0))
         
         # Add text labels (optional - using PIL's ImageDraw)
         try:
@@ -188,7 +197,8 @@ def create_side_by_side_gif(gt_dir: str, denoised_dir: str, output_path: str,
             # Add labels at the top
             label_y = 5
             draw.text((10, label_y), "Ground Truth", fill='black', font=font)
-            draw.text((gt_w + gap + 10, label_y), "Denoised", fill='black', font=font)
+            draw.text((img_w + gap + 10, label_y), "Noisy", fill='black', font=font)
+            draw.text((img_w * 2 + gap * 2 + 10, label_y), "Denoised", fill='black', font=font)
         except:
             # If ImageDraw fails, continue without labels
             pass
@@ -196,7 +206,7 @@ def create_side_by_side_gif(gt_dir: str, denoised_dir: str, output_path: str,
         combined_frames.append(combined_img)
     
     if not combined_frames:
-        raise ValueError("No valid frame pairs found")
+        raise ValueError("No valid frame triplets found")
     
     # Save as GIF
     print(f"  Creating side-by-side GIF: {output_path}...")
@@ -231,6 +241,8 @@ Examples:
     
     parser.add_argument('--gt-dir', type=str, default='ground_truth_video',
                        help='Ground truth frames directory (default: ground_truth_video)')
+    parser.add_argument('--noisy-dir', type=str, default='noisy_video',
+                       help='Noisy frames directory (default: noisy_video)')
     parser.add_argument('--denoised-dir', type=str, default='denoised_video',
                        help='Denoised frames directory (default: denoised_video)')
     parser.add_argument('--output-dir', type=str, default='experiment_result',
@@ -270,8 +282,18 @@ Examples:
         )
         print()
         
+        # Create noisy GIF
+        print("2. Creating noisy GIF...")
+        noisy_gif_path = os.path.join(args.output_dir, "noisy.gif")
+        noisy_frame_count = create_gif_from_frames(
+            args.noisy_dir, noisy_gif_path,
+            args.start, args.end,
+            args.duration, args.loop
+        )
+        print()
+        
         # Create denoised GIF
-        print("2. Creating denoised GIF...")
+        print("3. Creating denoised GIF...")
         denoised_gif_path = os.path.join(args.output_dir, "denoised.gif")
         denoised_frame_count = create_gif_from_frames(
             args.denoised_dir, denoised_gif_path,
@@ -281,10 +303,10 @@ Examples:
         print()
         
         # Create side-by-side comparison GIF
-        print("3. Creating side-by-side comparison GIF...")
+        print("4. Creating side-by-side comparison GIF...")
         comparison_gif_path = os.path.join(args.output_dir, "comparison.gif")
         comparison_frame_count = create_side_by_side_gif(
-            args.gt_dir, args.denoised_dir, comparison_gif_path,
+            args.gt_dir, args.noisy_dir, args.denoised_dir, comparison_gif_path,
             args.start, args.end,
             args.duration, args.loop, args.gap
         )
@@ -295,6 +317,7 @@ Examples:
         print(" Summary")
         print("="*70)
         print(f"Ground truth GIF:  {gt_gif_path} ({gt_frame_count} frames)")
+        print(f"Noisy GIF:         {noisy_gif_path} ({noisy_frame_count} frames)")
         print(f"Denoised GIF:      {denoised_gif_path} ({denoised_frame_count} frames)")
         print(f"Comparison GIF:    {comparison_gif_path} ({comparison_frame_count} frames)")
         print("="*70)
